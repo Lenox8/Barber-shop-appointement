@@ -1,0 +1,70 @@
+services:
+
+  rabbitmq:
+    image: rabbitmq:3.11-management-alpine
+    container_name: barber-rabbitmq
+
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+    environment:
+      RABBITMQ_DEFAULT_USER: appuser
+      RABBITMQ_DEFAULT_PASS: apppassword
+
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: barber-api
+
+    ports:
+      - "3000:3000"
+
+    env_file:
+      - .env
+
+    environment:
+      RABBIIMQ_URI: amqp://appuser:apppassword@rabbitmq:5672
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: barber-worker
+
+    command: ["node", "dist/main-worker.js"]
+
+    env_file:
+      - .env
+
+    environment:
+      RABBIIMQ_URI: amqp://appuser:apppassword@rabbitmq:5672
+
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+    restart: unless-stopped
+
+volumes:
+  rabbitmq_data:

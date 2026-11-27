@@ -1,126 +1,479 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Barber Shop Booking API
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+API para gestão de reservas de uma barbearia, desenvolvida com NestJS e PostgreSQL. O sistema permite gerir utilizadores, barbeiros, serviços de corte e reservas, utilizando RabbitMQ para processamento assíncrono de eventos e envio de notificações.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+O projecto explora conceitos de Backend Development e System Design, incluindo mensageria, Outbox Pattern, processamento assíncrono, persistência de dados e containerização com Docker.
 
-## Description
+## 1. Tecnologias utilizadas
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+| Tecnologia | Finalidade |
+|---|---|
+| Node.js 24 | Runtime JavaScript |
+| NestJS | Framework backend |
+| TypeScript | Linguagem de desenvolvimento |
+| PostgreSQL | Base de dados relacional |
+| Supabase | Hospedagem do PostgreSQL |
+| RabbitMQ | Message Broker |
+| @golevelup/nestjs-rabbitmq | Integração RabbitMQ com NestJS |
+| Docker | Containerização |
+| Docker Compose | Orquestração dos serviços |
+| GitHub Actions | Integração contínua (CI) |
+| Render | Hospedagem da API e Worker |
 
-## Project setup
+## 2. Arquitectura do sistema
 
-```bash
-$ npm install
+O sistema segue uma arquitectura orientada a eventos para processar notificações sem bloquear o fluxo principal de criação de reservas.
+
+### Fluxo de funcionamento
+
+1. O cliente solicita uma reserva através da API.
+2. A API valida os dados e regista a reserva no PostgreSQL.
+3. Na mesma transação, é criado um evento na tabela `outbox_events`.
+4. O Outbox Publisher identifica eventos ainda não publicados.
+5. Os eventos são publicados no RabbitMQ.
+6. O Notifications Consumer recebe os eventos.
+7. O Notifications Service processa a notificação e regista-a na base de dados.
+8. O sistema pode encaminhar a notificação para o canal de comunicação configurado.
+
+### Outbox Pattern
+
+O Outbox Pattern é utilizado para evitar inconsistências entre a persistência da reserva e a publicação de eventos.
+
+Em vez de gravar uma reserva e publicar diretamente no RabbitMQ dentro do mesmo fluxo HTTP, a aplicação grava a reserva e o respetivo evento na mesma transação PostgreSQL.
+
+Desta forma, se o RabbitMQ estiver temporariamente indisponível, o evento permanece na tabela `outbox_events` e poderá ser publicado posteriormente.
+
+**Exemplo simplificado:**
+
+```text
+Booking Request
+      |
+      v
+PostgreSQL Transaction
+      |
+      +---- Create Booking
+      |
+      +---- Create Outbox Event
+      |
+      v
+Outbox Publisher
+      |
+      v
+RabbitMQ
+      |
+      v
+Notifications Consumer
+      |
+      v
+Notifications Service
+      |
+      v
+Notification Storage
 ```
 
-## Compile and run the project
+## 3. Estrutura da base de dados
 
-```bash
-# development
-$ npm run start
+A aplicação utiliza PostgreSQL com UUIDs como identificadores principais e timestamps com timezone para representar datas e horas.
 
-# watch mode
-$ npm run start:dev
+### 3.1. Users
 
-# production mode
-$ npm run start:prod
+Armazena os utilizadores registados na plataforma.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| id | UUID | Identificador do utilizador |
+| username | TEXT | Nome de utilizador |
+| email | TEXT | Email único |
+| password | TEXT | Password armazenada de forma segura através de hash |
+| contato | TEXT | Contacto telefónico |
+| role | USER-DEFINED | Papel do utilizador |
+| timezone | VARCHAR | Fuso horário do utilizador |
+| created_at | TIMESTAMPTZ | Data de criação |
+| updated_at | TIMESTAMPTZ | Data de atualização |
+
+O timezone permite interpretar corretamente as datas e horas das reservas de acordo com a localização do utilizador.
+
+Valor padrão: `Africa/Maputo`.
+
+### 3.2. Barbers
+
+Armazena os barbeiros disponíveis na plataforma.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| id | UUID | Identificador do barbeiro |
+| name | TEXT | Nome do barbeiro |
+| user_id | UUID | Referência ao utilizador associado |
+
+Relacionamento:
+
+- Um utilizador pode estar associado a um registo de barbeiro.
+- Cada barbeiro está associado a um utilizador através de `user_id`.
+
+### 3.3. Stylist
+
+Armazena os serviços ou estilos de corte disponibilizados pela barbearia.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| id | UUID | Identificador do serviço |
+| cut_name | TEXT | Nome do corte |
+| created_at | TIMESTAMPTZ | Data de criação |
+| updated_at | TIMESTAMPTZ | Data de atualização |
+
+Exemplos de serviços:
+- Low Fade
+- Mid Fade
+- High Fade
+- Corte tradicional
+
+### 3.4. Reservas
+
+Armazena as reservas realizadas pelos utilizadores.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| id | UUID | Identificador da reserva |
+| user_id | UUID | Utilizador que realizou a reserva |
+| barber_id | UUID | Barbeiro selecionado |
+| cut_id | UUID | Serviço de corte selecionado |
+| scheduled_at | TIMESTAMPTZ | Data e hora agendadas |
+| status_att | USER-DEFINED | Estado da reserva |
+| created_at | TIMESTAMPTZ | Data de criação |
+| updated_at | TIMESTAMPTZ | Data de atualização |
+
+Relacionamentos:
+- Uma reserva pertence a um utilizador.
+- Uma reserva pertence a um barbeiro.
+- Uma reserva referencia um serviço de corte.
+
+O campo `scheduled_at` utiliza `TIMESTAMPTZ`, permitindo armazenar instantes temporais de forma consistente, independentemente do timezone do utilizador.
+
+### 3.5. Outbox Events
+
+Armazena os eventos que devem ser publicados no RabbitMQ.
+
+| Campo | Tipo | Descrição |
+|---|---|---|
+| id | UUID | Identificador do evento |
+| event_type | VARCHAR | Tipo de evento |
+| payload | JSONB | Dados associados ao evento |
+| created_at | TIMESTAMPTZ | Data de criação |
+| published_at | TIMESTAMPTZ | Data de publicação |
+
+O campo `published_at` permite identificar eventos que ainda aguardam publicação.
+
+Exemplo de evento:
+
+```json
+{
+  "eventId": "uuid",
+  "eventType": "booking.created",
+  "payload": {
+    "bookingId": "uuid",
+    "userId": "uuid",
+    "barberId": "uuid",
+    "scheduledAt": "2026-11-27T13:00:00.000Z"
+  }
+}
 ```
 
-## Run tests
+### 3.6. Notifications
 
-```bash
-# unit tests
-$ npm run test
+Armazena as notificações geradas pelo processamento dos eventos.
 
-# e2e tests
-$ npm run test:e2e
+| Campo | Tipo | Descrição |
+|---|---|---|
+| id | UUID | Identificador da notificação |
+| event_id | UUID | Identificador único do evento processado |
+| user_id | UUID | Destinatário |
+| title | VARCHAR | Título da notificação |
+| message | TEXT | Conteúdo da notificação |
+| is_read | BOOLEAN | Indica se foi visualizada |
+| created_at | TIMESTAMPTZ | Data de criação |
 
-# test coverage
-$ npm run test:cov
+A restrição UNIQUE sobre `event_id` ajuda a impedir a criação de notificações duplicadas para o mesmo evento.
+
+## 4. Relacionamentos
+
+Representação simplificada das relações entre as tabelas:
+
+```text
+USERS
+  |
+  +------ BARBERS
+  |          |
+  |          |
+  |       RESERVAS
+  |          |
+  +----------+
+             |
+          STYLIST
+
+USERS
+  |
+  +------ NOTIFICATIONS
+
+OUTBOX_EVENTS
+  |
+  +------ (event_id lógico) NOTIFICATIONS
 ```
 
-## Deployment
+Nota: `notifications.event_id` possui uma restrição UNIQUE, mas o schema atual não declara uma foreign key para `outbox_events`.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## 5. Pré-requisitos
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Antes de executar o projecto, certifica-te de que tens instalado:
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
+- Node.js 24 ou superior compatível com o projecto.
+- npm.
+- Docker Desktop.
+- Docker Compose.
+- Git.
+- Uma instância PostgreSQL, local ou Supabase.
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+Não é necessário instalar RabbitMQ manualmente quando utilizas Docker Compose.
 
-## Observability
+## 6. Instalação e execução local
 
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-This project is already instrumented. To connect it, run this and approve the code it prints at [observe.nestjs.com/link](https://observe.nestjs.com/link) - signing up for free if you have no account:
+### 6.1. Clonar o repositório
 
 ```bash
-$ npx @nestjs/observe link
+git clone <REPOSITORY_URL>
+
+cd <PROJECT_DIRECTORY>
 ```
 
-It writes the app key and secret into `.env` and makes every `nest start` script (`start`, `start:dev`, `start:debug`) load it. In production, set `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment instead.
+### 6.2. Instalar dependências
 
-Or do it by hand: create an application and an API key at [observe.nestjs.com](https://observe.nestjs.com), and set the pair as `OBSERVE_APP_KEY` and `OBSERVE_APP_SECRET` in the environment the app runs in.
+```bash
+npm install
+```
 
-The free plan needs no payment details and covers 300,000 events a month. You can also browse the [live demo](https://www.observe-demo.nestjs.com/dashboard) first - the whole dashboard over a busy service's data, with nothing to install.
+### 6.3. Configurar variáveis de ambiente
 
-## Resources
+Cria um ficheiro `.env` na raiz do projecto:
 
-Check out a few resources that may come in handy when working with NestJS:
+```env
+# Application
+NODE_ENV=development
+PORT=3000
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observe](https://observe.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+# Database
+DATABASE_URL=postgresql://...
 
-## Support
+# RabbitMQ
+RABBIIMQ_URI=amqp://appuser:apppassword@localhost:5672
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+**Importante:** o nome `RABBIIMQ_URI` deve corresponder exatamente ao nome utilizado no código actual. Recomenda-se uniformizar futuramente para `RABBITMQ_URI`.
 
-## Stay in touch
+Nunca publiques o ficheiro `.env` no GitHub.
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+### 6.4. Executar a aplicação
 
-## License
+```bash
+npm run start:dev
+```
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+A API ficará disponível em:
+
+```text
+http://localhost:3000
+```
+
+## 7. Docker
+
+O projecto utiliza Docker para garantir um ambiente de execução consistente, independentemente da máquina onde a aplicação é executada.
+
+
+Este Dockerfile utiliza multi-stage builds para separar a compilação da execução em produção, evitando incluir dependências de desenvolvimento na imagem final.
+
+**Nota:** confirma o caminho de saída do teu build NestJS. Se a compilação gerar `dist/src/main.js`, ajusta o comando de inicialização.
+
+
+### 7.1. Docker Compose
+
+O Docker Compose permite executar os serviços necessários ao ambiente local através de uma única configuração.
+
+
+
+**Atenção:** esta configuração pressupõe que existe um entrypoint `src/main-worker.ts`, compilado para `dist/main-worker.js`, e que o script de inicialização da API não executa também os consumidores do Worker. Se ainda não separaste os processos, adapta o Compose à estrutura atual.
+
+Como a base de dados está no Supabase, o PostgreSQL não precisa de ser executado neste Compose. O container da API e o Worker utilizam a mesma `DATABASE_URL`.
+
+### 7.1. Executar os containers
+
+Construir as imagens:
+
+```bash
+docker compose build
+```
+
+Iniciar os serviços:
+
+```bash
+docker compose up -d
+```
+
+Verificar os serviços:
+
+```bash
+docker compose ps
+```
+
+Visualizar os logs:
+
+```bash
+docker compose logs -f
+```
+
+Visualizar apenas os logs do Worker:
+
+```bash
+docker compose logs -f worker
+```
+
+Visualizar os logs do RabbitMQ:
+
+```bash
+docker compose logs -f rabbitmq
+```
+
+Parar os serviços:
+
+```bash
+docker compose down
+```
+
+Para eliminar também os dados persistidos do RabbitMQ:
+
+```bash
+docker compose down -v
+```
+
+**Cuidado:** o último comando elimina o volume persistente do broker.
+
+### 7.2. RabbitMQ Management
+
+O RabbitMQ disponibiliza uma interface de gestão para acompanhar exchanges, queues, connections e mensagens.
+
+Depois de iniciar os containers, acede a:
+
+```text
+http://localhost:15672
+```
+
+Credenciais locais:
+
+```text
+Username: appuser
+Password: apppassword
+```
+
+Esta interface é destinada ao desenvolvimento local. Não exponhas a porta de gestão publicamente em produção.
+
+## 8. Scripts disponíveis
+
+Os scripts dependem da configuração do `package.json`. Uma organização possível:
+
+| Comando | Descrição |
+|---|---|
+| `npm run start:dev` | Executar API em desenvolvimento |
+| `npm run build` | Compilar a aplicação |
+| `npm run start:prod` | Executar API compilada |
+| `npm run start:worker` | Executar processo Worker |
+| `npm run test` | Executar testes automatizados |
+
+## 9. CI/CD
+
+O projecto utiliza GitHub Actions para automatizar a validação e compilação da aplicação.
+
+O pipeline é executado quando:
+
+- Existe um push para a branch `main`.
+- É criado um Pull Request para `main`.
+- É publicada uma tag com o formato `v*.*.*`.
+
+Atualmente, o pipeline executa:
+
+1. Checkout do repositório.
+2. Configuração do Node.js.
+3. Instalação das dependências através de `npm ci`.
+4. Build da aplicação NestJS.
+
+Os testes automatizados serão adicionados numa etapa posterior.
+
+## 10. Deploy e infraestrutura
+
+A arquitectura de produção pode utilizar os seguintes serviços:
+
+| Componente | Serviço |
+|---|---|
+| Frontend | Vercel |
+| Backend API | Render Web Service |
+| Notifications Worker | Render Background Worker |
+| Message Broker | CloudAMQP |
+| Database | Supabase PostgreSQL |
+| CI/CD | GitHub Actions |
+
+### Configuração de produção
+
+Na produção, o RabbitMQ pode ser disponibilizado através do CloudAMQP, evitando a necessidade de administrar o broker manualmente.
+
+A API e o Worker devem receber as respetivas variáveis de ambiente através das configurações do Render.
+
+O Worker funciona continuamente, consumindo mensagens da fila e processando os eventos recebidos.
+
+O PostgreSQL permanece no Supabase, sendo partilhado pelos processos da aplicação.
+
+## 11. Limitações e melhorias futuras
+
+O projecto encontra-se em desenvolvimento. Algumas funcionalidades e mecanismos de robustez poderão ser adicionados nas próximas versões.
+
+### Limitações atuais
+
+- Não existe ainda um sistema completo de gestão de disponibilidade dos barbeiros.
+- A prevenção de reservas simultâneas para o mesmo barbeiro e horário necessita de restrições e mecanismos adicionais na base de dados.
+- Não existe ainda um mecanismo completo de gestão de pagamentos.
+- O sistema de notificações depende da disponibilidade do RabbitMQ e do respetivo serviço de entrega.
+- O pipeline CI ainda não inclui testes automatizados.
+- O schema atual da Outbox não inclui campos específicos para tentativas, erros e controlo de concorrência entre publishers.
+- A tabela de barbeiros ainda não possui campos de disponibilidade ou estado ativo/inativo.
+
+### Melhorias planeadas
+
+- Implementar testes unitários e de integração.
+- Implementar controlo de disponibilidade dos barbeiros.
+- Prevenir conflitos de horários através de transações e constraints no PostgreSQL.
+- Implementar Retry e Dead Letter Queue (DLQ).
+- Melhorar a recuperação de eventos pendentes na Outbox.
+- Implementar idempotência no processamento de mensagens.
+- Integrar canais externos de notificação, como SMS ou WhatsApp.
+- Implementar documentação interativa com Swagger.
+- Implementar monitorização e logging estruturado.
+- Melhorar o pipeline CI/CD com deploy automatizado.
+
+## 12. Conceitos de engenharia aplicados
+
+O projecto procura demonstrar a aplicação prática dos seguintes conceitos:
+
+- **Modular Architecture:** separação das responsabilidades por módulos.
+- **Event-Driven Architecture:** comunicação assíncrona através de eventos.
+- **Outbox Pattern:** consistência entre transações da base de dados e publicação de eventos.
+- **Message Broker:** utilização do RabbitMQ para comunicação entre produtores e consumidores.
+- **Asynchronous Processing:** processamento de notificações fora do ciclo principal HTTP.
+- **Idempotency:** prevenção de efeitos duplicados durante o processamento de eventos.
+- **Containerization:** utilização do Docker para empacotamento da aplicação.
+- **CI/CD:** automatização da integração e validação do código.
+
+## 13. Autor
+
+**Lenox Mucumbi**
+
+- GitHub: https://github.com/Lenox8
+- LinkedIn: https://linkedin.com/in/lenoxmucumbi
+
+---
+
+Desenvolvido como projecto de estudo e aplicação prática de conceitos de Backend Development e System Design.
